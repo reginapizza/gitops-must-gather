@@ -1,19 +1,5 @@
 #!/bin/bash
 
-# Copyright 2019 Red Hat, Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 BASE_COLLECTION_PATH="/must-gather"
 
 # The following CRDs are not managed by the Maistra operator but it
@@ -76,7 +62,7 @@ function getCRDs() {
     result+=("${crd}")
   done
 
-  # Get the remaining CRD's that don't contain a maistra label. See https://issues.jboss.org/browse/MAISTRA-799
+  # Get the remaining CRD's that don't contain a maistra label.
   local output
   output=$(oc get crd -l'!maistra-version' -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E 'maistra|istio')
   for crd in ${output}; do

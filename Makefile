@@ -14,15 +14,15 @@
 
 default: image
 
-HUB ?= quay.io/maistra
+HUB ?= quay.io/gitops
 TAG ?= latest
 
 lint:
 	find . -name '*.sh' -print0 | xargs -0 -r shellcheck
 
 image:
-	podman build -t ${HUB}/istio-must-gather:${TAG} .
+	podman build -t ${HUB}/gitops-must-gather:${TAG} .
 
 push: image
-	podman push ${HUB}/istio-must-gather:${TAG}
+	podman push ${HUB}/gitops-must-gather:${TAG}
 
