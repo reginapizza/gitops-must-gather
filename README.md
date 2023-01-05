@@ -1,14 +1,14 @@
-# GitOps Operator must-gather (POC)
+# GitOps Operator Must-Gather
 =================
 
 `GitOps must-gather` is a tool to gather information about the gitop-operator. It is built on top of [OpenShift must-gather](https://github.com/openshift/must-gather) and based off the [Istio must-gather tool](https://github.com/maistra/istio-must-gather).
 
 ### Usage
 ```sh
-oc adm must-gather --image=docker.io/reginapizza/gitops-must-gather:0.12.0
+oc adm must-gather --image=docker.io/redhat-developer/gitops-must-gather:latest
 ```
 
-The command above will create a local directory with a dump of the OpenShift Service Mesh state. Note that this command will only get data related to the Service Mesh part of the OpenShift cluster.
+The command above will create a local directory with a dump of the OpenShift GitOps state. Note that this command will only get data related to the GitOps Operator in your OpenShift cluster.
 
 You will get a dump of:
 - Information for the subscription of the gitops-operator

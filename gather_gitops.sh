@@ -1,10 +1,23 @@
 #!/bin/bash
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}"/common
 
-BASE_COLLECTION_PATH="/must-gather"
+# Expect base collection path as an argument
+BASE_COLLECTION_PATH=$1
 
-# The following CRDs are not managed by the Maistra operator but it
-# will create instances of them.
-DEPENDENCY_CRS="jaegers.jaegertracing.io kialis.kiali.io"
+# Use PWD as base path if no argument is passed
+if [ "${BASE_COLLECTION_PATH}" = "" ]; then
+    BASE_COLLECTION_PATH=$(pwd)
+fi
+
+NAMESPACE=${2:-openshift-gitops}
+
+GITOPS_COLLECTION_PATH="$BASE_COLLECTION_PATH/cluster-gitops"
+gitops_folder="$GITOPS_COLLECTION_PATH/gitops"
+
+# Set the color variable
+red='\033[0;31m'
 
 # Auxiliary function that adds a k8s prefix to a resource
 # $1: The prefix - e.g. "ns" or "pod"
@@ -24,173 +37,190 @@ function addResourcePrefix() {
   echo "${result}"
 }
 
-# Get the namespaces of all control planes in the cluster
-function getControlPlanes() {
+# Get all ArgoCD namespaces in the cluster
+function getArgoCDsNamespaces() {
   local result=()
-
   local namespaces
-  namespaces=$(oc get ServiceMeshControlPlane --all-namespaces -o jsonpath='{.items[*].metadata.namespace}')
+  namespaces=$(oc get ArgoCD --all-namespaces -o jsonpath='{.items[*].metadata.namespace}')
   for namespace in ${namespaces}; do
     result+=("${namespace}")
   done
 
-  echo "${result[@]}"
+  printf "%s\n" "${result[@]}"
 }
 
-# Get the members of a mesh (namespaces that belongs to a certain control plane).
-# $1 = Namespace of the control plane - e.g. "istio-system"
-# Returns a space-separated list of member namespaces (e.g. "bookinfo bookinfo2")
-function getMembers() {
-  local cp="${1}"
-
-  local output
-  output="$(oc -n "${cp}" get ServiceMeshMemberRoll default -o jsonpath='{.spec.members[*]}' 2>/dev/null)"
-
-  if [ -z "${output}" ]; then
-    return
-  fi
-
-  echo "${output}"
-}
-
-# Get the CRD's that belong to Maistra
-function getCRDs() {
-  local result=()
-  local output
-  output=$(oc get crd -lmaistra-version -o jsonpath='{.items[*].metadata.name}')
-  for crd in ${output}; do
-    result+=("${crd}")
-  done
-
-  # Get the remaining CRD's that don't contain a maistra label.
-  local output
-  output=$(oc get crd -l'!maistra-version' -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E 'maistra|istio')
-  for crd in ${output}; do
-    result+=("${crd}")
-  done
-
-  echo "${result[@]}"
-}
-
-# getPilotName gets the name of the Pilot instance in that namespace. 
-function getPilotName() {
-  local namespace="${1}"
-
-  oc get pods -n "${namespace}" -l 'app in (istiod,pilot)'  -o jsonpath="{.items[0].metadata.name}"
-}
-
-# getSynchronization dumps the synchronization status for the specified control plane
-# to a file in the control plane directory of the control plane namespace
-# Arguments:
-#		namespace of the control plane
-#	Returns:
-#		nothing
-function getSynchronization() {
-  local namespace="${1}"
-
-  echo "Collecting resources for namespace ${cp}"
-  local pilotName
-  pilotName=$(getPilotName "${namespace}")
-
-  echo "Overall Envoy synchronization status for namespace ${namespace}" > "${logPath}/controlPlaneStatus" 2>&1
-  local logPath=${BASE_COLLECTION_PATH}/namespaces/${namespace}/controlplane
-  mkdir -p "${logPath}"
-  oc exec "${pilotName}" -n "${namespace}" -c discovery -- /usr/local/bin/pilot-discovery request GET /debug/syncz > "${logPath}/synchronization" 2>&1
-}
-
-# getEnvoyConfigForPodsInNamespace dumps the envoy config for the specified namespace and
-# control plane to a file in the must-gather directory for each pod
-# Arguments:
-#   namespace of the control plane
-#   namespace to dump
-# Returns:
-#   nothing
-function getEnvoyConfigForPodsInNamespace() {
-  local controlPlaneNamespace="${1}"
-  local pilotName
-  pilotName=$(getPilotName "${controlPlaneNamespace}")
-  local podNamespace="${2}"
-
-  echo "Collecting Envoy config for pods in ${podNamespace}, control plane namespace ${controlPlaneNamespace}"
-
-  local pods
-  pods="$(oc get pods -n "${podNamespace}" -o jsonpath='{ .items[*].metadata.name }')"
-  for podName in ${pods}; do
-    if [ -z "$podName" ]; then
-        continue
-    fi
-
-    if oc get pod -o yaml "${podName}" -n "${podNamespace}" | grep -q proxyv2; then
-      echo "Collecting config for pod ${podName}.${podNamespace}"
-
-      local logPath=${BASE_COLLECTION_PATH}/namespaces/${podNamespace}/pods/${podName}
-      mkdir -p "${logPath}"
-
-      echo "Pilot config for pod ${podName}.${podNamespace} from istiod ${pilotName}.${controlPlaneNamespace}" > "${logPath}/pilotConfiguration" 2>&1
-      oc exec "${pilotName}" -n "${controlPlaneNamespace}" -c discovery -- bash -c "/usr/local/bin/pilot-discovery request GET /debug/config_dump?proxyID=${podName}.${podNamespace}" > "${logPath}/pilotConfiguration" 2>&1
-
-      echo "Envoy config for pod ${podName}.${podNamespace} from pilot ${pilotName}.${controlPlaneNamespace}" > "${logPath}/envoyConfiguration" 2>&1
-      oc exec -n "${podNamespace}" "${podName}" -c istio-proxy -- /usr/local/bin/pilot-agent request GET config_dump > "${logPath}/envoyConfiguration" 2>&1
-    fi
+# Get all ArgoCDs in the namespaces provided by getArgoCDsNamespaces
+function getArgoCDs() {
+  local result
+  local namespaces
+  namespaces="$(getArgoCDsNamespaces)"
+  for namespace in ${namespaces}; do
+    result=$(oc get ArgoCD -n "${namespace}")
+    echo "${result[@]}"
+    echo ""
   done
 }
+
+# Get all resources in all argocd namespaces
+function getAllArgoCDResources() {
+  local result
+  local namespaces
+  namespaces="$(getArgoCDsNamespaces)"
+  for namespace in ${namespaces}; do
+    result=$(oc get all -n "${namespace}")
+    echo -e "Namespace '${namespace}':"
+    echo "${result[@]}"
+    echo ""
+  done
+}
+
+#Get all Applications
+function getApplications() {
+  local result
+  oc get Applications --all-namespaces -o yaml
+  echo "${result}"
+}
+
+# Get all ApplicationSets
+function getApplicationSets() {
+  local result
+  oc get ApplicationSets --all-namespaces -o yaml
+  echo "${result}"
+}
+
+# Get all ApplicationProjects
+function getAppProjects() {
+  local result
+  oc get AppProjects --all-namespaces -o yaml
+  echo "${result}"
+}
+
+# Get logs for every deployment
+# tr '|' '\t' < file | column -t (command to change to column format)
+function getOperatorLogs() {
+  local namespaces
+  namespaces="$(getArgoCDsNamespaces)"
+  for namespace in ${namespaces}; do
+    local deploymentResult=""
+    local deployments
+    deployments=$(oc get deployments -n "${namespace}" -o jsonpath='{.items[*].metadata.name}')
+    # for deployment in ${deployments}; do
+    for (( i=0; i< ${#deployments[@]}; i++ )); do
+      echo "Deployments are: ${deployments}"
+      # if [ "$i" -eq 0 ]; then
+      #   deploymentResult+=$(oc get deployment/"${deployments[i]}" -n "${namespace}")"\n"
+      # else
+        deploymentResult+=$(oc get deployment/"${deployments[i]}" -n "${namespace}" --no-headers=true)"\n"
+      # fi
+    done
+    local statefulsetResult=""
+    local statefulsets
+    statefulsets=$(oc get statefulset -n "${namespace}" -o jsonpath='{.items[*].metadata.name}')
+    for statefulset in ${statefulsets}; do
+      statefulsetResult+=$(oc get statefulset/"${statefulset}" -n "${namespace}")
+    done
+
+    echo -e "Deployments in namespace '${namespace}':"
+    echo -e "${deploymentResult}" | column -t 
+    echo -e "StatefulSets in namespace '${namespace}':"
+    echo -e "${statefulsetResult}"| column -t
+    echo ""
+  done
+}
+
 
 function main() {
   echo
-  echo "Executing Istio gather script"
+  echo -e "${red}Starting GitOps Operator must-gather script...${clear}"
+  mkdir -p "$gitops_folder"
+  echo
+  
+  echo
+  echo -e "OpenShift Cluster Version:"
+  oc version > "${gitops_folder}"/oc-version.txt 2>&1
   echo
 
-  operatorNamespace=$(oc get pods --all-namespaces -l name=istio-operator -o jsonpath="{.items[0].metadata.namespace}")
-  local resources="ns/${operatorNamespace} MutatingWebhookConfiguration ValidatingWebhookConfiguration"
-
-  local controlPlanes="$*"
-  if [ -z "${controlPlanes}" ]; then
-    controlPlanes="$(getControlPlanes)"
-  fi
-
-  resources+="$(addResourcePrefix ns "${controlPlanes}")"
-
-  for cp in ${controlPlanes}; do
-      local members
-      members=$(getMembers "${cp}")
-      resources+="$(addResourcePrefix ns "${members}")"
-      getSynchronization "${cp}"
-
-      for cr in ${DEPENDENCY_CRS}; do
-        oc adm inspect "--dest-dir=${BASE_COLLECTION_PATH}" -n "${cp}" "${cr}"
-      done
-
-       #collect Envoy configuration first from control plane pods and then from members
-       getEnvoyConfigForPodsInNamespace "${cp}" "${cp}"
-       for member in ${members}; do
-           if [ -z "$member" ]; then
-               continue
-           fi
-          echo "Processing ${cp} member ${member}"
-          getEnvoyConfigForPodsInNamespace "${cp}" "${member}"
-       done
+  echo -e "Cluster Service Versions"
+  for csv in $(oc -n "${NAMESPACE}" get csv -o name) ; do
+    oc -n "${NAMESPACE}" get "${csv}" -o yaml > "${gitops_folder}/${csv}.yaml"
   done
+  echo
 
-  local crds
-  crds="$(getCRDs)"
-  resources+="$(addResourcePrefix crd "${crds}")"
+  echo 
+  echo -e "GitOps Operator Version:"
+  oc get sub openshift-gitops-operator -n openshift-operators -o yaml | grep -oP '(currentCSV: openshift-gitops-operator)\K.*' | cut -c 2- > "${gitops_folder}"/gitops-operator-version.txt 2>&1
+  echo
 
-  for resource in ${resources}; do
-    echo
-    echo "Dumping resource ${resource}..."
-    oc adm inspect "--dest-dir=${BASE_COLLECTION_PATH}" "${resource}"
+  echo
+  echo -e "GitOps Operator Subscription:"
+  oc describe sub openshift-gitops-operator -n openshift-operators > "${gitops_folder}"/subscription.txt 2>&1
+  echo
+
+  echo
+  echo -e "${red}Pods for GitOps Operator:"
+  oc get pods -n openshift-gitops -o wide > "${gitops_folder}"/pods.txt 2>&1
+  echo
+
+  echo
+  echo -e "Deployments for GitOps Operator:"
+  for deployment in $(oc -n "${NAMESPACE}" get csv -o name) ; do
+    oc -n "${NAMESPACE}" get "${deployment}" -o yaml > "${gitops_folder}"/deployment_"${deployment}".yaml
   done
+  echo
 
-  # Get all CRD's
-  for crd in ${crds}; do
-    echo
-    echo "Dumping CRD ${crd}..."
-    oc adm inspect "--dest-dir=${BASE_COLLECTION_PATH}" --all-namespaces "${crd}"
-  done
+  echo
+  echo -e "Secrets for GitOps Operator"
+  oc -n "${NAMESPACE}" get secrets -o yaml > "${gitops_folder}"/secrets.yaml 2>&1
+  echo
+
+  echo
+  echo -e "Namespaces where ArgoCD instances are present:"
+  getArgoCDsNamespaces  > "${gitops_folder}"/argocds.txt 2>&1
+  echo
+
+  echo
+  echo -e "Namespaces where ArgoCD instances are present:"
+  getAllArgoCDResources  > "${gitops_folder}"/argocds.txt 2>&1
+  echo
+
+  echo
+  echo -e "ArgoCDs:"
+  getArgoCDs  > "${gitops_folder}"/argocds.txt 2>&1
+  echo
+
+  echo
+  echo -e "Applications:"
+  getApplications  > "${gitops_folder}"/applications.txt 2>&1
+  echo
+
+  echo
+  echo -e "ApplicationSets:"
+  getApplicationSets  > "${gitops_folder}"/applicationsets.txt 2>&1
+  echo
+
+  echo
+  echo -e "AppProjects:"
+  getAppProjects  > "${gitops_folder}"/appprojects.txt 2>&1
+  echo
+
+  echo
+  echo -e "GitOps Operator Events (Warnings only):"
+  oc get events -n openshift-gitops --field-selector type=Warning  > "${gitops_folder}"/events.txt 2>&1
+  echo 
+
+  echo
+  echo -e "GitOps Operator Events (Errors only):"
+  oc get events -n openshift-gitops --field-selector type=Error > "${gitops_folder}"/events.txt 2>&1
+  echo
+
+  echo
+  echo -e "GitOps CRDs:"
+  oc get crds -l operators.coreos.com/openshift-gitops-operator.openshift-operators > "${gitops_folder}"/crds.txt 2>&1
+  echo
 
   echo
   echo
-  echo "Done"
+  echo -e "Done! Thank you for using the GitOps must-gather tool :)"
   echo
 }
 
